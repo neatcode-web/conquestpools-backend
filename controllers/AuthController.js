@@ -22,23 +22,10 @@ const { constants } = require("../helpers/constants");
  */
 exports.register = [
 	// Validate fields.
-	body("firstName").isLength({ min: 1 }).trim().withMessage("First name must be specified.")
-		.isAlphanumeric().withMessage("First name has non-alphanumeric characters."),
-	body("lastName").isLength({ min: 1 }).trim().withMessage("Last name must be specified.")
-		.isAlphanumeric().withMessage("Last name has non-alphanumeric characters."),
-	body("email").isLength({ min: 1 }).trim().withMessage("Email must be specified.")
-		.isEmail().withMessage("Email must be a valid email address.").custom((value) => {
-			return UserModel.findOne({email : value}).then((user) => {
-				if (user) {
-					return Promise.reject("E-mail already in use");
-				}
-			});
-		}),
+	body("username").isLength({ min: 1 }).trim().withMessage("Username must be specified."),
 	body("password").isLength({ min: 6 }).trim().withMessage("Password must be 6 characters or greater."),
 	// Sanitize fields.
-	sanitizeBody("firstName").escape(),
-	sanitizeBody("lastName").escape(),
-	sanitizeBody("email").escape(),
+	sanitizeBody("username").escape(),
 	sanitizeBody("password").escape(),
 	// Process request after validation and sanitization.
 	(req, res) => {
@@ -98,63 +85,84 @@ exports.register = [
 /**
  * User login.
  *
- * @param {string}      email
+ * @param {string}      username
  * @param {string}      password
  *
  * @returns {Object}
  */
 exports.login = [
-	body("email").isLength({ min: 1 }).trim().withMessage("Email must be specified.")
-		.isEmail().withMessage("Email must be a valid email address."),
+	body("username").isLength({ min: 1 }).trim().withMessage("Username must be specified.")
+		.withMessage("Email must be a valid email address."),
 	body("password").isLength({ min: 1 }).trim().withMessage("Password must be specified."),
-	sanitizeBody("email").escape(),
+	sanitizeBody("username").escape(),
 	sanitizeBody("password").escape(),
-	(req, res) => {
+	async (req, res) => {
 		try {
 			const errors = validationResult(req);
 			if (!errors.isEmpty()) {
 				return apiResponse.validationErrorWithData(res, "Validation Error.", errors.array());
 			}else {
-				UserModel.findOne({email : req.body.email}).then(user => {
-					if (user) {
-						//Compare given password with db's hash.
-						bcrypt.compare(req.body.password,user.password,function (err,same) {
-							if(same){
-								//Check account confirmation.
-								if(user.isConfirmed){
-									// Check User's account active or not.
-									if(user.status) {
-										let userData = {
-											_id: user._id,
-											firstName: user.firstName,
-											lastName: user.lastName,
-											email: user.email,
-										};
-										//Prepare JWT token for authentication
-										const jwtPayload = userData;
-										const jwtData = {
-											expiresIn: process.env.JWT_TIMEOUT_DURATION,
-										};
-										const secret = process.env.JWT_SECRET;
-										//Generated JWT token with Payload and secret.
-										userData.token = jwt.sign(jwtPayload, secret, jwtData);
-										return apiResponse.successResponseWithData(res,"Login Success.", userData);
-									}else {
-										return apiResponse.unauthorizedResponse(res, "Account is not active. Please contact admin.");
-									}
-								}else{
-									return apiResponse.unauthorizedResponse(res, "Account is not confirmed. Please confirm your account.");
-								}
-							}else{
-								return apiResponse.unauthorizedResponse(res, "Email or Password wrong.");
-							}
-						});
-					}else{
-						return apiResponse.unauthorizedResponse(res, "Email or Password wrong.");
+				const username = req.body.username;
+				const password = req.body.password;
+				const pool = await getConnection();
+				const { recordset } = await pool
+				.request()
+				.input("username", username)
+				.query(querys.getUserByUserName);
+				if( recordset.length === 0 ){
+					await pool
+						.request()
+						.input("username", sql.VarChar, username)
+						.input("branch", sql.VarChar, null)
+						.input("password", sql.VarChar, password)
+						.query(querys.addNewUser);
+					//generate jwt and response with success
+					console.log(recordset[0])
+					let userData = {
+						id: recordset[0].ID,
+						username: username,
+					};
+					//Prepare JWT token for authentication
+					const jwtPayload = userData;
+					const jwtData = {
+						expiresIn: process.env.JWT_TIMEOUT_DURATION,
+					};
+					const secret = process.env.JWT_SECRET;
+					//Generated JWT token with Payload and secret.
+					userData.token = jwt.sign(jwtPayload, secret, jwtData);
+					return apiResponse.successResponseWithData(res,"Login Success.", userData);
+				}
+				else{
+					//existing User
+					const result = await pool
+								.request()
+								.input("username", username)
+								.input("password", password)
+								.query(querys.getUserByIdAndPassword);
+					console.log(result)
+					if( recordset.length === 0 ){
+						return apiResponse.unauthorizedResponse(res, "Incorrect Password.");
 					}
-				});
+					else{
+						//generate jwt and response with success
+						let userData = {
+							id: recordset[0].ID,
+							username: username,
+						};
+						//Prepare JWT token for authentication
+						const jwtPayload = userData;
+						const jwtData = {
+							expiresIn: process.env.JWT_TIMEOUT_DURATION,
+						};
+						const secret = process.env.JWT_SECRET;
+						//Generated JWT token with Payload and secret.
+						userData.token = jwt.sign(jwtPayload, secret, jwtData);
+						return apiResponse.successResponseWithData(res,"Login Success.", userData);
+					}
+				}
 			}
 		} catch (err) {
+			console.log(err)
 			return apiResponse.ErrorResponse(res, err);
 		}
 	}];
